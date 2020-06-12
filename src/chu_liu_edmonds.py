@@ -4,7 +4,7 @@ Documentation: https://allenai.github.io/allennlp-docs/api/allennlp.nn.chu_liu_e
 GitHub: https://github.com/allenai/allennlp/blob/master/allennlp/nn/chu_liu_edmonds.py
 """
 
-from typing import List, Set, Tuple, Dict
+# from typing import List, Set, Tuple, Dict
 import numpy
 
 
