@@ -4,6 +4,8 @@ import torch.nn as nn
 
 START_TAG = "<START>"
 STOP_TAG = "<STOP>"
+UNKNOWN_TOKEN = "<unk>"
+PAD_TOKEN = "<pad>" # Optional: this is used to pad a batch of sentences in different lengths.
 
 
 class BiLSTM_CRF(nn.Module):
