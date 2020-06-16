@@ -353,7 +353,7 @@ class Checkpoint():
             plt.savefig(os.path.join(self.models_path, self.naming_scheme(self.version, -1, self.seed, dir=True), '{}.png'.format(plot_title)), dpi=200)
         plt.show()
 
-    def _run(self, device, data_loader, train=False):
+    def _run(self, device, data_loader, batch_size, train=False):
         """
         a private method used to pass data through model
         if train=True : computes gradients and updates model weights
@@ -364,28 +364,44 @@ class Checkpoint():
 
         if train:
             self.model.train()
+            self.optimizer.zero_grad()
         else:
             self.model.eval()
             loss_sum = np.array([])
             y_pred = np.array([])
             y_true = np.array([])
 
-        for batch in data_loader:
-            for i, _ in enumerate(batch):
-                batch[i] = batch[i].to(device)
+        for i, batch in enumerate(data_loader):
+            for j, _ in enumerate(batch):
+                batch[j] = batch[j].to(device)
             out = self.model(*batch[:-1])
-            loss = self.criterion(out, batch[-1].float())
+            loss = self.criterion(out, batch[-1].long())
             
             if train:
-                self.optimizer.zero_grad()
                 loss.backward()
-                self.optimizer.step()
+                if i % batch_size == 0:
+#                     print('train step', i)
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
             else:
-                loss_sum = np.append(loss_sum, float(loss.data))
+#                 if i % batch_size == 0:
+#                     print('eval step', i, 'loss', loss_sum.sum())
+#                 print(loss)
+#                 print(loss.data)
+#                 print(loss.data.detach())
+#                 print(loss.data.detach().cpu())
+#                 print(float(loss.data.detach().cpu()))
+                try:
+                    loss_sum = np.append(loss_sum, float(loss.data.detach().cpu()))
+                except Exception as e:
+                    raise e
                 y_pred = np.append(y_pred, self.decision_func(out.detach().cpu().numpy()))
                 y_true = np.append(y_true, batch[-1].detach().cpu().numpy())
 
-        if not train:
+        if train:
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+        else:
             return float(loss_sum.mean()), float(self.score(y_true, y_pred))
 
     def train(self, device, train_dataset, val_dataset, train_epochs=0, batch_size=64, optimizer_params={}, prints=True, p_dropout=0, epochs_save=0, lr_decay=0.0, save=False):
@@ -421,13 +437,16 @@ class Checkpoint():
         """
         torch.manual_seed(self.seed)
         np.random.seed(self.seed)
+        
+        batch_size = int(batch_size)
+        
         if train_epochs > 0:
             self.model.to(device)
             start_epoch = self.get_log()
             start_time = self.get_log('train_time')
 
-            train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
-            val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=batch_size, shuffle=False)
+            train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=1, shuffle=True)
+            val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1, shuffle=False)
 
             for param in optimizer_params:
                 for group, _ in enumerate(self.optimizer.param_groups):
@@ -442,10 +461,11 @@ class Checkpoint():
             for train_epoch in range(train_epochs):
                 epoch = train_epoch + start_epoch + 1
                 # train epoch
-                self._run(device, train_loader, train=True)
+                self._run(device, train_loader, batch_size, train=True)
                 with torch.no_grad():
-                    train_loss, train_score = self._run(device, train_loader, train=False)
-                    val_loss, val_score = self._run(device, val_loader, train=False)
+                    train_loss, train_score = self._run(device, train_loader, batch_size, train=False)
+#                     train_loss, train_score = 0.0, 0.0
+                    val_loss, val_score = self._run(device, val_loader, batch_size, train=False)
 
                 # save sample to checkpoint
                 best = val_score > self.get_log('val_score', epoch='best')
