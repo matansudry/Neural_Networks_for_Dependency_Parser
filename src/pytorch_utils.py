@@ -92,7 +92,15 @@ def load_model(version=None, models_path=None, epoch=-1, seed=42, prints=True, n
     return checkpoint
 
 
-class Checkpoint():
+def _loss_decision_func(obj, device, batch):
+    for i, _ in enumerate(batch):
+        batch[i] = batch[i].to(device)
+    out = obj.model(*batch[:-1])
+    loss = obj.criterion(out, batch[-1]).long()
+    return loss, batch[-1], out
+
+
+class Checkpoint:
     """
     a wrapper class that manages all interactions with an nn.Module instance,
     including training, saving, evaluating, stats logging,
@@ -118,7 +126,7 @@ class Checkpoint():
         the scoring function to be used for evaluating the train ans validation score,
         can be any function that gets y_true, y_pred args,
         Example : >>> sklearn.metrics.roc_auc_score(y_true, y_pred)
-    decision_func : callable
+    out_decision_func : callable
         an optional feature for the case when there needs to be another transformation
         on the raw model output before passing it to the scoring function
         (default is lambda x : x)
@@ -143,7 +151,7 @@ class Checkpoint():
     >>>                         version=1.0,
     >>>                         model=model,
     >>>                         score=sklearn.metrics.roc_auc_score,
-    >>>                         decision_func=lambda x : x,  # a function that (optionally) converts model output for the score function (default is the identity function)
+    >>>                         out_decision_func=lambda x : x,  # a function that (optionally) converts model output for the score function (default is the identity function)
     >>>                         seed=42,  # int
     >>>                         optimizer=torch.optim.Adam,  # any optimizer
     >>>                         criterion=nn.BCELoss,  # any loss function
@@ -152,7 +160,7 @@ class Checkpoint():
     >>>                         prints=False)  # bool
     """
 
-    def __init__(self, models_path, version, model, score, decision_func=lambda x : x, seed=42,
+    def __init__(self, models_path, version, model, score, loss_decision_func=_loss_decision_func, out_decision_func=lambda x : x, seed=42,
                  optimizer=torch.optim.Adam, criterion=nn.BCELoss, naming_scheme=_naming_scheme, save=False, prints=False):
         """
         Parameters
@@ -167,7 +175,7 @@ class Checkpoint():
             the scoring function to be used for evaluating the train ans validation score,
             can be any function that gets y_true, y_pred args,
             Example : >>> sklearn.metrics.roc_auc_score(y_true, y_pred)
-        decision_func : callable, optional
+        out_decision_func : callable, optional
             an optional feature for the case when there needs to be another transformation
             on the raw model output before passing it to the scoring function
             (default is lambda x : x)
@@ -190,7 +198,7 @@ class Checkpoint():
         >>>                         version=1.0,
         >>>                         model=model,
         >>>                         score=sklearn.metrics.roc_auc_score,
-        >>>                         decision_func=lambda x : x,  # a function that (optionally) converts model output for the score function (default is the identity function)
+        >>>                         out_decision_func=lambda x : x,  # a function that (optionally) converts model output for the score function (default is the identity function)
         >>>                         seed=42,  # int
         >>>                         optimizer=torch.optim.Adam,  # any optimizer
         >>>                         criterion=nn.BCELoss,  # any loss function
@@ -208,7 +216,8 @@ class Checkpoint():
         self.optimizer = optimizer([p for p in self.model.parameters() if p.requires_grad], lr=4e-4)
         self.criterion = criterion()
         self.score = score
-        self.decision_func = decision_func
+        self.loss_decision_func = loss_decision_func
+        self.out_decision_func = out_decision_func
         self.log = pd.DataFrame(columns=['train_time',
                                          'timestamp',
                                          'train_loss',
@@ -291,6 +300,7 @@ class Checkpoint():
         import dill
 
         if explicit_file is not None:
+#             torch.save(self, explicit_file)
             with open(explicit_file, 'wb') as f:
                 dill.dump(self, f)
             return
@@ -300,12 +310,15 @@ class Checkpoint():
         if not os.path.exists(os.path.join(self.models_path, self.naming_scheme(self.version, -1, self.seed, dir=True))):
             os.mkdir(os.path.join(self.models_path, self.naming_scheme(self.version, -1, self.seed, dir=True)))
 
+#         torch.save(self, os.path.join(self.models_path, self.naming_scheme(self.version, -1, self.seed)))
         with open(os.path.join(self.models_path, self.naming_scheme(self.version, -1, self.seed)), 'wb') as f:
             dill.dump(self, f)
         if best:
+#             torch.save(self, os.path.join(self.models_path, self.naming_scheme(self.version, 'best', self.seed)))
             with open(os.path.join(self.models_path, self.naming_scheme(self.version, 'best', self.seed)), 'wb') as f:
                 dill.dump(self, f)
         if epoch:
+#             torch.save(self, os.path.join(self.models_path, self.naming_scheme(self.version, self.get_log(), self.seed)))
             with open(os.path.join(self.models_path, self.naming_scheme(self.version, self.get_log(), self.seed)), 'wb') as f:
                 dill.dump(self, f)
 
@@ -353,7 +366,7 @@ class Checkpoint():
             plt.savefig(os.path.join(self.models_path, self.naming_scheme(self.version, -1, self.seed, dir=True), '{}.png'.format(plot_title)), dpi=200)
         plt.show()
 
-    def _run(self, device, data_loader, batch_size, train=False):
+    def _run(self, device, data_loader, train=False):
         """
         a private method used to pass data through model
         if train=True : computes gradients and updates model weights
@@ -364,44 +377,26 @@ class Checkpoint():
 
         if train:
             self.model.train()
-            self.optimizer.zero_grad()
         else:
             self.model.eval()
             loss_sum = np.array([])
             y_pred = np.array([])
             y_true = np.array([])
 
-        for i, batch in enumerate(data_loader):
-            for j, _ in enumerate(batch):
-                batch[j] = batch[j].to(device)
-            out = self.model(*batch[:-1])
-            loss = self.criterion(out, batch[-1].long())
+        for batch in data_loader:
+            loss, y, out = self.loss_decision_func(self, device, batch)
             
             if train:
+                self.optimizer.zero_grad()
                 loss.backward()
-                if i % batch_size == 0:
-#                     print('train step', i)
-                    self.optimizer.step()
-                    self.optimizer.zero_grad()
+                self.optimizer.step()
             else:
-#                 if i % batch_size == 0:
-#                     print('eval step', i, 'loss', loss_sum.sum())
-#                 print(loss)
-#                 print(loss.data)
-#                 print(loss.data.detach())
-#                 print(loss.data.detach().cpu())
-#                 print(float(loss.data.detach().cpu()))
-                try:
-                    loss_sum = np.append(loss_sum, float(loss.data.detach().cpu()))
-                except Exception as e:
-                    raise e
-                y_pred = np.append(y_pred, self.decision_func(out.detach().cpu().numpy()))
-                y_true = np.append(y_true, batch[-1].detach().cpu().numpy())
+                loss_sum = np.append(loss_sum, float(loss.data))
+                y_pred = np.append(y_pred, self.out_decision_func(out.detach().cpu().numpy()))
+                y_true = np.append(y_true, y.detach().cpu().numpy())
+                assert y_pred.shape == y_true.shape, f'y_pred.shape={y_pred.shape} != y_true.shape={y_true.shape}'
 
-        if train:
-            self.optimizer.step()
-            self.optimizer.zero_grad()
-        else:
+        if not train:
             return float(loss_sum.mean()), float(self.score(y_true, y_pred))
 
     def train(self, device, train_dataset, val_dataset, train_epochs=0, batch_size=64, optimizer_params={}, prints=True, p_dropout=0, epochs_save=0, lr_decay=0.0, save=False):
@@ -437,16 +432,13 @@ class Checkpoint():
         """
         torch.manual_seed(self.seed)
         np.random.seed(self.seed)
-        
-        batch_size = int(batch_size)
-        
         if train_epochs > 0:
             self.model.to(device)
             start_epoch = self.get_log()
             start_time = self.get_log('train_time')
 
-            train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=1, shuffle=True)
-            val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1, shuffle=False)
+            train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
+            val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=batch_size, shuffle=False)
 
             for param in optimizer_params:
                 for group, _ in enumerate(self.optimizer.param_groups):
@@ -461,11 +453,10 @@ class Checkpoint():
             for train_epoch in range(train_epochs):
                 epoch = train_epoch + start_epoch + 1
                 # train epoch
-                self._run(device, train_loader, batch_size, train=True)
+                self._run(device, train_loader, train=True)
                 with torch.no_grad():
-                    train_loss, train_score = self._run(device, train_loader, batch_size, train=False)
-#                     train_loss, train_score = 0.0, 0.0
-                    val_loss, val_score = self._run(device, val_loader, batch_size, train=False)
+                    train_loss, train_score = self._run(device, train_loader, train=False)
+                    val_loss, val_score = self._run(device, val_loader, train=False)
 
                 # save sample to checkpoint
                 best = val_score > self.get_log('val_score', epoch='best')
