@@ -4,7 +4,7 @@ Documentation: https://allenai.github.io/allennlp-docs/api/allennlp.nn.chu_liu_e
 GitHub: https://github.com/allenai/allennlp/blob/master/allennlp/nn/chu_liu_edmonds.py
 """
 
-# from typing import List, Set, Tuple, Dict
+from typing import List, Set, Tuple, Dict
 import numpy
 
 
@@ -290,39 +290,52 @@ def _find_cycle(parents: List[int],
     return has_cycle, list(cycle)
 
 
-def test_chu_liu_edmonds():
-    # Full graph, excluding edges to ROOT.
-    # G = {head: [modifier]}
-    G = {0: [1, 2, 3],
-         1: [2, 3],
-         2: [1, 3],
-         3: [1, 2]}
+def test_chu_liu_edmonds(y_pred, y_true):
+    batch_size = (y_pred.shape)[0]
+    max_sentence_length = (y_pred.shape)[1]
+    max_head = (y_pred.shape)[2]
+    
+    ## need to check we are working from 0 - max_sentence_length including root   
+    for batch_i in range(batch_size):
+        G = {}
+        W = {}
+        for head_word_index in range(max_head):
+            G[head_word_index] = [] # creating empty array for each head
+        for modifier_word_index  in range(1, max_sentence_length):
+            for head_word_index in range(max_head):
+                if (modifier_word_index == head_word_index): # skip when the modifier and head are equal
+                    continue
+                G[head_word_index].append(modifier_word_index) # adding modifier to each head
+                W[(head_word_index,modifier_word_index)] = float(y_pred[batch_i][modifier_word_index][head_word_index])# creating the edges
+                      
 
-    # Weights for full graph G.
-    # W = {(head, modifier): weight}
-    W = {(0, 1): 9,
-         (0, 2): 10,
-         (0, 3): 9,
-         (1, 2): 20,
-         (1, 3): 3,
-         (2, 1): 30,
-         (2, 3): 30,
-         (3, 1): 11,
-         (3, 2): 0}
-
-    # Array values are parents, indices are children.
-    # CORRECT_MST[modifier] = head
-    CORRECT_MST_HEADS = numpy.array([-1, 2, 0, 2])
-
-    num_nodes = len(G.keys())
-    edge_scores_matrix = numpy.zeros((num_nodes, num_nodes))
-    for (i, j), w in W.items():
-        edge_scores_matrix[i][j] = w
-    mst, _ = decode_mst(edge_scores_matrix, num_nodes, has_labels=False)
-    assert numpy.array_equal(mst, CORRECT_MST_HEADS), f"MST graph is incorrect: {mst}"
-    print(f"Test passed successfully: {mst}")
+        # Array values are parents, indices are children.
+        # CORRECT_MST[modifier] = head
+        CORRECT_MST_HEADS = numpy.zeros(max_sentence_length)
+        for modifier_word_index in range(max_sentence_length):
+            if modifier_word_index==0:
+                CORRECT_MST_HEADS[modifier_word_index]= -1
+                continue
+            CORRECT_MST_HEADS[modifier_word_index] = int(y_true[batch_i][modifier_word_index])
+        
+        ## creating temp exmaple to validate the code
+        """for i in range(max_head):
+            for j in range(1, max_sentence_length):
+                if (i == j-1):
+                    W[(i,j)] = 1
+                CORRECT_MST_HEADS[j] = j-1"""         
+            
+        num_nodes = len(G.keys())
+        edge_scores_matrix = numpy.zeros((num_nodes, num_nodes))
+        for (i, j), w in W.items():
+            edge_scores_matrix[i][j] = w
+        mst, _ = decode_mst(edge_scores_matrix, num_nodes, has_labels=False)
+        print(len(mst))
+        print(len(CORRECT_MST_HEADS))
+        assert numpy.array_equal(mst, CORRECT_MST_HEADS), f"MST graph is incorrect: {mst}"
+        print(f"Test passed successfully: {mst}")
 
 
 if __name__ == "__main__":
-    test_chu_liu_edmonds()
+    test_chu_liu_edmonds(y_pred, y_true)
 
