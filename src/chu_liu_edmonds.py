@@ -6,6 +6,7 @@ GitHub: https://github.com/allenai/allennlp/blob/master/allennlp/nn/chu_liu_edmo
 
 from typing import List, Set, Tuple, Dict
 import numpy
+import torch
 
 
 def decode_mst(energy: numpy.ndarray,
@@ -290,52 +291,59 @@ def _find_cycle(parents: List[int],
     return has_cycle, list(cycle)
 
 
-def test_chu_liu_edmonds(y_pred, y_true):
+def test_chu_liu_edmonds(y_pred, mask, padding):
     batch_size = (y_pred.shape)[0]
     max_sentence_length = (y_pred.shape)[1]
     max_head = (y_pred.shape)[2]
+    y_pred_final = torch.zeros([batch_size, max_sentence_length], dtype=torch.float)
     
-    ## need to check we are working from 0 - max_sentence_length including root   
+    ## need to check we are working from 0 - max_sentence_length including root  
+    
     for batch_i in range(batch_size):
-        G = {}
-        W = {}
-        for head_word_index in range(max_head):
+        sentence_length = max_sentence_length
+        for i in range(max_sentence_length): # getting the sentence length in batch_i
+            if mask[batch_i][i] == 0:
+                sentence_length = i
+                break 
+        G = {}# G = {head: [modifier]}
+        W = {}# W = {(head, modifier): weight}
+        for head_word_index in range(sentence_length):
             G[head_word_index] = [] # creating empty array for each head
-        for modifier_word_index  in range(1, max_sentence_length):
-            for head_word_index in range(max_head):
-                if (modifier_word_index == head_word_index): # skip when the modifier and head are equal
+        for modifier_word_index  in range(1, sentence_length):
+            for head_word_index in range(sentence_length):
+                if (modifier_word_index == head_word_index): # if the medifier and head are the same
                     continue
                 G[head_word_index].append(modifier_word_index) # adding modifier to each head
                 W[(head_word_index,modifier_word_index)] = float(y_pred[batch_i][modifier_word_index][head_word_index])# creating the edges
-                      
 
-        # Array values are parents, indices are children.
-        # CORRECT_MST[modifier] = head
-        CORRECT_MST_HEADS = numpy.zeros(max_sentence_length)
-        for modifier_word_index in range(max_sentence_length):
-            if modifier_word_index==0:
-                CORRECT_MST_HEADS[modifier_word_index]= -1
-                continue
-            CORRECT_MST_HEADS[modifier_word_index] = int(y_true[batch_i][modifier_word_index])
+#         CORRECT_MST_HEADS = numpy.zeros(sentence_length)
+#         for modifier_word_index in range(sentence_length):
+#             if modifier_word_index == 0:
+#                 CORRECT_MST_HEADS[modifier_word_index] = -1
+#                 continue
+#             CORRECT_MST_HEADS[modifier_word_index] = int(y_true[batch_i][modifier_word_index])
         
-        ## creating temp exmaple to validate the code
-        """for i in range(max_head):
-            for j in range(1, max_sentence_length):
-                if (i == j-1):
-                    W[(i,j)] = 1
-                CORRECT_MST_HEADS[j] = j-1"""         
+#         ## creating temp exmaple to validate the code
+#         for i in range(max_head):
+#             if mask[batch_i][i] == 0:
+#                 continue
+#             for j in range(1, max_sentence_length):
+#                 if mask[batch_i][j] == 0:
+#                     continue
+#                 if (i == j-1):
+#                     W[(i,j)] = 1
+#                 CORRECT_MST_HEADS[j] = j-1  
             
         num_nodes = len(G.keys())
         edge_scores_matrix = numpy.zeros((num_nodes, num_nodes))
         for (i, j), w in W.items():
             edge_scores_matrix[i][j] = w
         mst, _ = decode_mst(edge_scores_matrix, num_nodes, has_labels=False)
-        print(len(mst))
-        print(len(CORRECT_MST_HEADS))
-        assert numpy.array_equal(mst, CORRECT_MST_HEADS), f"MST graph is incorrect: {mst}"
-        print(f"Test passed successfully: {mst}")
+        y_pred_final[batch_i,0:sentence_length] = torch.from_numpy(mst) # addint the reslut to Tensor
+        y_pred_final[batch_i,sentence_length:max_sentence_length] = padding # adding padding in the rest of the tensor that is long then the sentence
+    return y_pred_final
 
 
 if __name__ == "__main__":
-    test_chu_liu_edmonds(y_pred, y_true)
+    test_chu_liu_edmonds(y_pred, mask,padding)
 
