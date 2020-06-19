@@ -64,13 +64,13 @@ def load_model(version=None, models_path=None, epoch=-1, seed=42, prints=True, n
     """
     import dill
     
-    if from_file is None:
+    if explicit_file is None:
         model_path = os.path.join(models_path, naming_scheme(version, epoch, seed))
     else:
         model_path = explicit_file
     try:
         with open(model_path, "rb") as f:
-            model = dill.load(f)
+            checkpoint = dill.load(f)
 
     except Exception as e:
         print("Loading Error")
@@ -366,7 +366,7 @@ class Checkpoint:
             plt.savefig(os.path.join(self.models_path, self.naming_scheme(self.version, -1, self.seed, dir=True), '{}.png'.format(plot_title)), dpi=200)
         plt.show()
 
-    def _run(self, device, data_loader, train=False):
+    def _run(self, device, data_loader, train=False, results=False, decision_func=None):
         """
         a private method used to pass data through model
         if train=True : computes gradients and updates model weights
@@ -384,7 +384,7 @@ class Checkpoint:
             y_true = np.array([])
 
         for batch in data_loader:
-            loss, y, out = self.loss_decision_func(self, device, batch)
+            loss, flat_y, flat_out, mask, out, y = self.loss_decision_func(self, device, batch)
             
             if train:
                 self.optimizer.zero_grad()
@@ -392,12 +392,19 @@ class Checkpoint:
                 self.optimizer.step()
             else:
                 loss_sum = np.append(loss_sum, float(loss.data))
-                y_pred = np.append(y_pred, self.out_decision_func(out.detach().cpu().numpy()))
-                y_true = np.append(y_true, y.detach().cpu().numpy())
+#                 y_pred = np.append(y_pred, self.out_decision_func(flat_out.detach().cpu().numpy()))
+                if not decision_func:
+                    y_pred = np.append(y_pred, self.out_decision_func(out.detach().cpu(), flat_out.detach().cpu().numpy(), mask, self.model.y_pad))
+                else:
+                    y_pred = np.append(y_pred, decision_func(out.detach().cpu(), flat_out.detach().cpu().numpy(), mask, self.model.y_pad))
+                y_true = np.append(y_true, flat_y.detach().cpu().numpy())
                 assert y_pred.shape == y_true.shape, f'y_pred.shape={y_pred.shape} != y_true.shape={y_true.shape}'
 
         if not train:
+            if results:
+                return float(loss_sum.mean()), float(self.score(y_true, y_pred)), y_pred, y_true
             return float(loss_sum.mean()), float(self.score(y_true, y_pred))
+            
 
     def train(self, device, train_dataset, val_dataset, train_epochs=0, batch_size=64, optimizer_params={}, prints=True, p_dropout=0, epochs_save=0, lr_decay=0.0, save=False):
         """
@@ -433,7 +440,7 @@ class Checkpoint:
         torch.manual_seed(self.seed)
         np.random.seed(self.seed)
         if train_epochs > 0:
-            self.model.to(device)
+            self.model = self.model.to(device)
             start_epoch = self.get_log()
             start_time = self.get_log('train_time')
 
@@ -473,11 +480,6 @@ class Checkpoint:
                           ] + list(self._get_optimizer_params().values())
                 self.log.loc[epoch] = to_log
 
-                # epoch progress prints
-                if prints:
-                    print('epoch {:3d}/{:3d} | train_loss {:.5f} | val_loss {:.5f} | train_score {:.5f} | val_score {:.5f} | train_time {:6.2f} min'
-                          .format(epoch, train_epochs + start_epoch, train_loss, val_loss, train_score, val_score, train_time))
-
                 # save checkpoint
                 if save and epochs_save > 0:
                     self.save()
@@ -490,6 +492,11 @@ class Checkpoint:
                 for group, _ in enumerate(self.optimizer.param_groups):
                     self.optimizer.param_groups[group]['lr'] = self.optimizer.param_groups[group]['lr']*(1 - lr_decay)
 
+                # epoch progress prints
+                if prints:
+                    print('epoch {:3d}/{:3d} | train_loss {:.5f} | val_loss {:.5f} | train_score {:.5f} | val_score {:.5f} | train_time {:6.2f} min'
+                          .format(epoch, train_epochs + start_epoch, train_loss, val_loss, train_score, val_score, train_time))
+
             # # end of session prints
             # if prints:
                 # print("train_loss {:.6f} | prev {}\nval_loss {:.6f} | prev {}"
@@ -499,4 +506,16 @@ class Checkpoint:
                       # .format(self.get_log('train_score'), self.get_log('train_score', start_epoch),
                              # self.get_log('val_score'), self.get_log('val_score', start_epoch)))
 
+
+    def predict(self, dataset, batch_size, device, results=True, decision_func=None):
+        torch.manual_seed(self.seed)
+        np.random.seed(self.seed)
+        
+        self.model = self.model.to(device)
+        loader = torch.utils.data.DataLoader(dataset=dataset, batch_size=batch_size, shuffle=False)
+        with torch.no_grad():
+            res = self._run(device, loader, train=False, results=results, decision_func=decision_func)
+        return res
+
+# 
 

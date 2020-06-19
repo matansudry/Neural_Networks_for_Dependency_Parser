@@ -1,148 +1,178 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
+from . import dataset as dset
 
 
-START_TAG = "<START>"
-STOP_TAG = "<STOP>"
-UNKNOWN_TOKEN = "<unk>"
-PAD_TOKEN = "<pad>" # Optional: this is used to pad a batch of sentences in different lengths.
+class BiLSTM(nn.Module):
+    def __init__(self, train_dataset, word_embed_dim, tag_embed_dim, hidden_dim, num_layers, bias, mlp1_dim, mlp2_dim, p_dropout, word_dropout):
+        super(BiLSTM, self).__init__()
+        
+        self.unk = int(train_dataset.special_dict[dset.UNK])
+        self.pad = int(train_dataset.special_dict[dset.PAD])
+        self.y_pad = int(train_dataset.special_dict[dset.y_PAD])
+        self.word_dropout = word_dropout
 
+        self.word_embedding_layer = nn.Embedding(num_embeddings=train_dataset.words_num,
+                                                 embedding_dim=word_embed_dim,
+                                                 padding_idx=self.pad)
 
-class BiLSTM_CRF(nn.Module):
-    def __init__(self, vocab_size, tag_to_ix, embedding_dim, hidden_dim):
-        super(BiLSTM_CRF, self).__init__()
-        self.embedding_dim = embedding_dim
-        self.hidden_dim = hidden_dim
-        self.vocab_size = vocab_size
-        self.tag_to_ix = tag_to_ix
-        self.tagset_size = len(tag_to_ix)
+        self.tag_embedding_layer = nn.Embedding(num_embeddings=train_dataset.tags_num,
+                                                embedding_dim=tag_embed_dim,
+                                                padding_idx=self.pad)
 
-        self.word_embeds = nn.Embedding(vocab_size, embedding_dim)
-        self.lstm = nn.LSTM(embedding_dim, hidden_dim // 2,
-                            num_layers=1, bidirectional=True)
+        self.lstm = nn.LSTM(input_size=word_embed_dim + tag_embed_dim,
+                            hidden_size=hidden_dim,
+                            num_layers=num_layers,
+                            bias=bias,
+                            dropout=p_dropout,
+                            batch_first=True,
+                            bidirectional=True)
 
-        # Maps the output of the LSTM into tag space.
-        self.hidden2tag = nn.Linear(hidden_dim, self.tagset_size)
+        self.mlp1 = nn.Linear(int(hidden_dim*2), mlp1_dim, bias=bias)
+        self.mlp2 = nn.Linear(int(hidden_dim*2), mlp1_dim, bias=bias)
 
-        # Matrix of transition parameters.  Entry i,j is the score of
-        # transitioning *to* i *from* j.
-        self.transitions = nn.Parameter(
-            torch.randn(self.tagset_size, self.tagset_size))
+        self.mlp_out = nn.Linear(mlp1_dim, mlp2_dim, bias=bias)
+#         self.mlp_out1 = nn.Linear(mlp1_dim, mlp2_dim, bias=bias)
+#         self.mlp_out2 = nn.Linear(mlp1_dim, mlp2_dim, bias=bias)
 
-        # These two statements enforce the constraint that we never transfer
-        # to the start tag and we never transfer from the stop tag
-        self.transitions.data[tag_to_ix[START_TAG], :] = -10000
-        self.transitions.data[:, tag_to_ix[STOP_TAG]] = -10000
+    def forward(self, words, tags, lens, device, prints=False):
+        max_len = words.shape[1]
 
-        self.hidden = self.init_hidden()
+        print('words', words.shape) if prints else None
+        # [batch_size, max_sentence_len]
 
-    def init_hidden(self):
-        return (torch.randn(2, 1, self.hidden_dim // 2),
-                torch.randn(2, 1, self.hidden_dim // 2))
+        print('tags', tags.shape) if prints else None
+        # [batch_size, max_sentence_len]
 
-    def _forward_alg(self, feats):
-        # Do the forward algorithm to compute the partition function
-        init_alphas = torch.full((1, self.tagset_size), -10000.)
-        # START_TAG has all of the score.
-        init_alphas[0][self.tag_to_ix[START_TAG]] = 0.
+        print('lens', len(lens)) if prints else None
+        # [batch_size]
 
-        # Wrap in a variable so that we will get automatic backprop
-        forward_var = init_alphas
+        # word dropout
+        if self.training:
+            mask = (torch.rand(words.shape) > self.word_dropout).long().to(device)
+            inv_mask = (-mask + 1).float().to(device)
+            
+            words = words * mask + inv_mask * self.unk
+            tags = tags * mask + inv_mask * self.unk
+        
+        words = self.word_embedding_layer(words.long())
+        print('word_embeds', words.shape) if prints else None
+        # [batch_size, max_sentence_len, word_embed_dim]
 
-        # Iterate through the sentence
-        for feat in feats:
-            alphas_t = []  # The forward tensors at this timestep
-            for next_tag in range(self.tagset_size):
-                # broadcast the emission score: it is the same regardless of
-                # the previous tag
-                emit_score = feat[next_tag].view(
-                    1, -1).expand(1, self.tagset_size)
-                # the ith entry of trans_score is the score of transitioning to
-                # next_tag from i
-                trans_score = self.transitions[next_tag].view(1, -1)
-                # The ith entry of next_tag_var is the value for the
-                # edge (i -> next_tag) before we do log-sum-exp
-                next_tag_var = forward_var + trans_score + emit_score
-                # The forward variable for this tag is log-sum-exp of all the
-                # scores.
-                alphas_t.append(log_sum_exp(next_tag_var).view(1))
-            forward_var = torch.cat(alphas_t).view(1, -1)
-        terminal_var = forward_var + self.transitions[self.tag_to_ix[STOP_TAG]]
-        alpha = log_sum_exp(terminal_var)
-        return alpha
+        tags = self.tag_embedding_layer(tags.long())
+        print('tag_embeds', tags.shape) if prints else None
+        # [batch_size, max_sentence_len, tag_embed_dim]
 
-    def _get_lstm_features(self, sentence):
-        self.hidden = self.init_hidden()
-        embeds = self.word_embeds(sentence).view(len(sentence), 1, -1)
-        lstm_out, self.hidden = self.lstm(embeds, self.hidden)
-        lstm_out = lstm_out.view(len(sentence), self.hidden_dim)
-        lstm_feats = self.hidden2tag(lstm_out)
-        return lstm_feats
+        x = torch.cat((words, tags), -1)
+        print('cat', x.shape) if prints else None
+        # [batch_size, max_sentence_len, word_embed_dim + tag_embed_dim]
 
-    def _score_sentence(self, feats, tags):
-        # Gives the score of a provided tag sequence
-        score = torch.zeros(1)
-        tags = torch.cat([torch.tensor([self.tag_to_ix[START_TAG]], dtype=torch.long), tags])
-        for i, feat in enumerate(feats):
-            score = score + \
-                self.transitions[tags[i + 1], tags[i]] + feat[tags[i + 1]]
-        score = score + self.transitions[self.tag_to_ix[STOP_TAG], tags[-1]]
-        return score
+        x = nn.utils.rnn.pack_padded_sequence(x, lens, batch_first=True, enforce_sorted=False)
+#         print('pack_padded_sequence', x.shape) if prints else None
+        # [batch_size, packed_size, word_embed_dim + tag_embed_dim]
 
-    def _viterbi_decode(self, feats):
-        backpointers = []
+        x, _ = self.lstm(x)
+#         print('lstm', x.shape) if prints else None
+        # [batch_size, seq_length, 2*hidden_dim]
 
-        # Initialize the viterbi variables in log space
-        init_vvars = torch.full((1, self.tagset_size), -10000.)
-        init_vvars[0][self.tag_to_ix[START_TAG]] = 0
+        x, lens = nn.utils.rnn.pad_packed_sequence(x, batch_first=True, padding_value=self.pad, total_length=max_len)
+        print('pad_packed_sequence', x.shape) if prints else None
 
-        # forward_var at step i holds the viterbi variables for step i-1
-        forward_var = init_vvars
-        for feat in feats:
-            bptrs_t = []  # holds the backpointers for this step
-            viterbivars_t = []  # holds the viterbi variables for this step
+        # [batch_size, packed_size, 2*hidden_dim]
 
-            for next_tag in range(self.tagset_size):
-                # next_tag_var[i] holds the viterbi variable for tag i at the
-                # previous step, plus the score of transitioning
-                # from tag i to next_tag.
-                # We don't include the emission scores here because the max
-                # does not depend on them (we add them in below)
-                next_tag_var = forward_var + self.transitions[next_tag]
-                best_tag_id = argmax(next_tag_var)
-                bptrs_t.append(best_tag_id)
-                viterbivars_t.append(next_tag_var[0][best_tag_id].view(1))
-            # Now add in the emission scores, and assign forward_var to the set
-            # of viterbi variables we just computed
-            forward_var = (torch.cat(viterbivars_t) + feat).view(1, -1)
-            backpointers.append(bptrs_t)
+#         X1 = x.unsqueeze(1)
+#         print('X1', X1.shape)
+        
+#         Y1 = x.unsqueeze(2)
+        
+#         print('Y1', Y1.shape)
+#         X2 = X1.repeat(1, x.shape[1], 1, 1)
+        
+#         Y2 = Y1.repeat(1, 1, x.shape[1], 1)
+        
+#         print(X2.shape, X2.shape)
+#         x = torch.cat([X2, Y2],-1)
+        
+#         x = torch.cat([x.unsqueeze(1).repeat(1, x.shape[1], 1, 1),
+#                        x.unsqueeze(2).repeat(1, 1, x.shape[1], 1),
+#                       ], -1)
+#         print(Z.shape)
+        
+#         x1 = x.repeat(1, 2, 1)
+#         print('x1', x1.shape) if prints else None
+        
+#         x2 = x.unsqueeze(2).repeat(1, 1, 2, 1).view(x.size(0), -1, x.size(2))
+#         print('x2', x2.shape) if prints else None
 
-        # Transition to STOP_TAG
-        terminal_var = forward_var + self.transitions[self.tag_to_ix[STOP_TAG]]
-        best_tag_id = argmax(terminal_var)
-        path_score = terminal_var[0][best_tag_id]
+#         x = torch.cat((x1, x2), dim=2).view(x.size(0),
+#                                             x.size(1),
+#                                             x.size(1),
+#                                             int(x.size(2)*2))
+#         print('all_word_combs', x.shape) if prints else None
+#         # [batch_size, max_sentence_len, max_sentence_len, 4*hidden_dim]
 
-        # Follow the back pointers to decode the best path.
-        best_path = [best_tag_id]
-        for bptrs_t in reversed(backpointers):
-            best_tag_id = bptrs_t[best_tag_id]
-            best_path.append(best_tag_id)
-        # Pop off the start tag (we dont want to return that to the caller)
-        start = best_path.pop()
-        assert start == self.tag_to_ix[START_TAG]  # Sanity check
-        best_path.reverse()
-        return path_score, best_path
+        x1 = self.mlp1(x)
+        print('mlp1', x1.shape) if prints else None
+        # [batch_size, max_sentence_len, max_sentence_len, mlp1_dim]
 
-    def neg_log_likelihood(self, sentence, tags):
-        feats = self._get_lstm_features(sentence)
-        forward_score = self._forward_alg(feats)
-        gold_score = self._score_sentence(feats, tags)
-        return forward_score - gold_score
+#         x1 = F.tanh(x1)
+#         print('tanh_x1', x1.shape) if prints else None
+#         # [batch_size, max_sentence_len, max_sentence_len, mlp1_dim]
 
-    def forward(self, sentence):  # dont confuse this with _forward_alg above.
-        # Get the emission scores from the BiLSTM
-        lstm_feats = self._get_lstm_features(sentence)
+        x2 = self.mlp2(x)
+        print('mlp2', x2.shape) if prints else None
+        # [batch_size, max_sentence_len, max_sentence_len, mlp1_dim]
 
-        # Find the best path, given the features.
-        score, tag_seq = self._viterbi_decode(lstm_feats)
-        return score, tag_seq
+#         x2 = F.tanh(x2)
+#         print('tanh_x2', x2.shape) if prints else None
+#         # [batch_size, max_sentence_len, max_sentence_len, mlp1_dim]
+
+#         x1 = self.mlp_out1(x1)
+#         print('mlp_out1', x1.shape) if prints else None
+#         # [batch_size, max_sentence_len, max_sentence_len, mlp2_dim]
+
+#         x2 = self.mlp_out2(x2)
+#         print('mlp_out2', x2.shape) if prints else None
+#         # [batch_size, max_sentence_len, max_sentence_len, mlp2_dim]
+
+#         x = torch.einsum("abc,adc->abdc", x1, x2)
+#         print('einsum', x.shape) if prints else None
+#         # [batch_size, max_sentence_len, max_sentence_len, mlp2_dim]
+
+        x1 = x1.unsqueeze(1)
+        print('unsqueeze_x1', x1.shape) if prints else None
+#         print('x1', x1) if prints else None
+        # [batch_size, max_sentence_len, max_sentence_len, mlp2_dim]
+
+        x2 = x2.unsqueeze(2)
+        print('unsqueeze_x2', x2.shape) if prints else None
+#         print('x2', x2) if prints else None
+        # [batch_size, max_sentence_len, max_sentence_len, mlp2_dim]
+
+        x = x1 + x2
+        print('outer_add_x1_x2', x.shape) if prints else None
+#         print('x1 + x2', x) if prints else None
+        # [batch_size, max_sentence_len, max_sentence_len, mlp2_dim]
+
+        x = F.tanh(x)
+        print('tanh', x.shape) if prints else None
+        # [batch_size, max_sentence_len, max_sentence_len, mlp1_dim]
+
+        x = self.mlp_out(x)
+        print('mlp_out', x.shape) if prints else None
+        # [batch_size, max_sentence_len, max_sentence_len, mlp2_dim]
+    
+        x = F.log_softmax(x, dim=2)
+        print('log_softmax', x.shape) if prints else None
+        # [batch_size, max_sentence_len, max_sentence_len, mlp2_dim]
+
+        x = x.squeeze(-1)
+        print('squeeze', x.shape) if prints else None
+        # [batch_size, mlp2_dim, max_sentence_len] ????????????
+
+        return x
+    
+    
+    

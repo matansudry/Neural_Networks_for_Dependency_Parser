@@ -5,12 +5,12 @@ import torch
 import torch.nn as nn
 
 
-# SOS = '<SOS>'
+ROOT = '<ROOT>'
 # EOS = '<EOS>'
 UNK = '<UNK>'
 PAD = '<PAD>'
 y_PAD = '<y_PAD>'
-SPECIAL = [y_PAD, PAD, UNK, ]
+SPECIAL = [y_PAD, PAD, UNK, ROOT]
 
 class DataSet:
     """
@@ -53,10 +53,11 @@ class DataSet:
         if train_dataset is None:
             # self.max_sentence_len is used as self.X, self.y 2nd dimention
             self.max_sentence_len = self.df['Token_Counter'].dropna().max() + 1
-            self.token_heads = [i for i in list(range(int(self.max_sentence_len)))]
+#             self.token_heads = [i for i in list(range(int(self.max_sentence_len)))]
 
-            self.words_dict = {token: i + len(SPECIAL) - 1 for i, token in enumerate(set(self.df['Token'].dropna().values))}
-            self.tags_dict = {token: i + len(SPECIAL) - 1 for i, token in enumerate(set(self.df['Token_POS'].dropna().values))}
+            self.words_dict = {token: i + len(SPECIAL) - 1 for i, token in enumerate(sorted(list(set(self.df['Token'].dropna().values))))}
+            self.tags_dict = {token: i + len(SPECIAL) - 1 for i, token in enumerate(sorted(list(set(self.df['Token_POS'].dropna().values))))}
+#             self.tags_dict = {token: i + len(SPECIAL) - 1 for i, token in enumerate(set(self.df['Token_POS'].dropna().values))}
             self.special_dict = {token: i - 1 for i, token in enumerate(SPECIAL)}
             
             self.words_num = len(self.words_dict) + len(self.special_dict) - 1
@@ -64,7 +65,7 @@ class DataSet:
 
         else:
             self.max_sentence_len = train_dataset.max_sentence_len
-            self.token_heads = train_dataset.token_heads
+#             self.token_heads = train_dataset.token_heads
 
             self.words_dict = train_dataset.words_dict
             self.tags_dict = train_dataset.tags_dict
@@ -87,10 +88,10 @@ class DataSet:
             # i is df['Token_Counter']
             i = line.values[0]
             if i == 1.0:  # if i==1: init the sentence X, y
-                sentence_words = []
-                sentence_tags = []
+                sentence_words = [self.special_dict[ROOT]]
+                sentence_tags = [self.special_dict[ROOT]]
                 if tagged:
-                    sentence_y = []
+                    sentence_y = [self.special_dict[ROOT]]
 
             if pd.notna(i):
                 sentence_words.append(self.words_dict.get(line['Token'], self.special_dict[UNK]))
