@@ -1,15 +1,16 @@
+import os
 import numpy as np
 import pandas as pd
 
 import torch
 import torch.nn as nn
+from tqdm import tqdm
 
 
-ROOT = '<ROOT>'
-# EOS = '<EOS>'
-UNK = '<UNK>'
-PAD = '<PAD>'
-y_PAD = '<y_PAD>'
+ROOT = '<root>'
+UNK = '<unk>'
+PAD = '<pad>'
+y_PAD = '<y_pad>'
 SPECIAL = [y_PAD, PAD, UNK, ROOT]
 
 class DataSet:
@@ -29,7 +30,7 @@ class DataSet:
     inv_tokens : dict
         key=index, value=token
     """
-    def __init__(self, path, train_dataset=None, tagged=True, tqdm_bar=False, keep_df=False):
+    def __init__(self, path, train_dataset=None, tagged=True, tqdm_bar=False):
         """
         Parameters
         -------
@@ -49,15 +50,14 @@ class DataSet:
         # load csv to pd.DataFrame
         self.df = pd.read_csv(path, names=['Token_Counter', 'Token', 3, 'Token_POS', 5 ,6 , 'Token_Head', 8, 9, 10],
                               sep='\t', skip_blank_lines=False)
+        self.df_preds = None
 
         if train_dataset is None:
             # self.max_sentence_len is used as self.X, self.y 2nd dimention
             self.max_sentence_len = self.df['Token_Counter'].dropna().max() + 1
-#             self.token_heads = [i for i in list(range(int(self.max_sentence_len)))]
 
             self.words_dict = {token: i + len(SPECIAL) - 1 for i, token in enumerate(sorted(list(set(self.df['Token'].dropna().values))))}
             self.tags_dict = {token: i + len(SPECIAL) - 1 for i, token in enumerate(sorted(list(set(self.df['Token_POS'].dropna().values))))}
-#             self.tags_dict = {token: i + len(SPECIAL) - 1 for i, token in enumerate(set(self.df['Token_POS'].dropna().values))}
             self.special_dict = {token: i - 1 for i, token in enumerate(SPECIAL)}
             
             self.words_num = len(self.words_dict) + len(self.special_dict) - 1
@@ -65,21 +65,21 @@ class DataSet:
 
         else:
             self.max_sentence_len = train_dataset.max_sentence_len
-#             self.token_heads = train_dataset.token_heads
 
             self.words_dict = train_dataset.words_dict
             self.tags_dict = train_dataset.tags_dict
             self.special_dict = train_dataset.special_dict
 
+            self.words_num = train_dataset.words_num
+            self.tags_num = train_dataset.tags_num
+            
         # fill X, y tensors with data
         self.words_tensor = []
         self.tags_tensor = []
         self.lens = []
-        if tagged:
-            self.y = []
+        self.y = []
 
         if tqdm_bar:
-            from tqdm import tqdm
             iterable = tqdm(self.df.iterrows(), total=len(self.df))
         else:
             iterable = self.df.iterrows()
@@ -90,37 +90,47 @@ class DataSet:
             if i == 1.0:  # if i==1: init the sentence X, y
                 sentence_words = [self.special_dict[ROOT]]
                 sentence_tags = [self.special_dict[ROOT]]
-                if tagged:
-#                     sentence_y = [self.special_dict[ROOT]]
-                    sentence_y = []
+                sentence_y = []
 
             if pd.notna(i):
                 sentence_words.append(self.words_dict.get(line['Token'], self.special_dict[UNK]))
                 sentence_tags.append(self.tags_dict.get(line['Token_POS'], self.special_dict[UNK]))
                 if tagged:
                     sentence_y.append(line['Token_Head'])
+                else:
+                    sentence_y.append(0.0)
             else:
                 self.words_tensor.append(torch.LongTensor(sentence_words))
                 self.tags_tensor.append(torch.LongTensor(sentence_tags))
                 self.lens.append(len(sentence_words))
-                if tagged:
-                    self.y.append(torch.FloatTensor(sentence_y))
+                self.y.append(torch.FloatTensor(sentence_y))
         
         self.words_tensor = nn.utils.rnn.pad_sequence(self.words_tensor, batch_first=False, padding_value=self.special_dict[PAD]).transpose(1, 0)
         self.tags_tensor = nn.utils.rnn.pad_sequence(self.tags_tensor, batch_first=False, padding_value=self.special_dict[PAD]).transpose(1, 0)
-        if tagged:
-            self.y = nn.utils.rnn.pad_sequence(self.y, batch_first=False, padding_value=self.special_dict[y_PAD]).transpose(1, 0)
+        self.y = nn.utils.rnn.pad_sequence(self.y, batch_first=False, padding_value=self.special_dict[y_PAD]).transpose(1, 0)
 
-        if not keep_df:
-            del self.df
+    def insert_predictions(self, preds, name):
+        self.df_preds = self.df.copy()
+        counter = 0
+        for i in tqdm(self.df_preds.index):
+            if pd.notna(self.df_preds.loc[i, 'Token_Counter']):
+                self.df_preds.loc[i, 'Token_Head'] = preds[counter]
+                counter += 1
+                
+        self.df_preds.to_csv(os.path.join('preds', f'{name}_321128258.labeled'), sep='\t', index=False)
 
+    def get_UAS(self):
+        assert self.df_preds is not None, 'need to run insert_predictions first'
+        assert self.df_preds.shape == self.df.shape, 'self.df_preds.shape must match self.df.shape'
+        return (self.df_preds['Token_Head'].dropna().values == self.df['Token_Head'].dropna().values).mean()
+                
     @property
     def dataset(self):
         return list(zip(self.words_tensor, self.tags_tensor, self.lens, self.y))
-            
+
     def __len__(self):
         return len(self.X)
-            
+
     def __iter__(self):
         for x, y in zip(self.X, self.y):
             yield x, y

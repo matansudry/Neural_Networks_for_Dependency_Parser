@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from . import dataset as dset
 
 
-class BiLSTM(nn.Module):
+class SuperTransformer(nn.Module):
     def __init__(self, train_dataset, word_embed_dim, tag_embed_dim, hidden_dim,
                  num_layers, bias, mlp1_dim, p_dropout, word_dropout):
         super(BiLSTM, self).__init__()
@@ -14,7 +14,8 @@ class BiLSTM(nn.Module):
         self.pad = int(train_dataset.special_dict[dset.PAD])
         self.y_pad = int(train_dataset.special_dict[dset.y_PAD])
         self.word_dropout = word_dropout
-
+        
+        # TODO: change to glove and maybe fine-tune
         self.word_embedding_layer = nn.Embedding(num_embeddings=train_dataset.words_num,
                                                  embedding_dim=word_embed_dim,
                                                  padding_idx=self.pad)
@@ -23,6 +24,7 @@ class BiLSTM(nn.Module):
                                                 embedding_dim=tag_embed_dim,
                                                 padding_idx=self.pad)
 
+        # TODO: change to transformer
         self.lstm = nn.LSTM(input_size=word_embed_dim + tag_embed_dim,
                             hidden_size=hidden_dim,
                             num_layers=num_layers,
@@ -31,9 +33,9 @@ class BiLSTM(nn.Module):
                             batch_first=True,
                             bidirectional=True)
 
+        # TODO: change to attention scores
         self.mlp11 = nn.Linear(int(hidden_dim*2), mlp1_dim, bias=bias)
         self.mlp12 = nn.Linear(int(hidden_dim*2), mlp1_dim, bias=bias)
-
         self.mlp2 = nn.Linear(mlp1_dim, 1, bias=bias)
 
     def forward(self, words, tags, lens, device, prints=False):
