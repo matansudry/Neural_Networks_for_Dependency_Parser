@@ -91,7 +91,8 @@ class DataSet:
                 sentence_words = [self.special_dict[ROOT]]
                 sentence_tags = [self.special_dict[ROOT]]
                 if tagged:
-                    sentence_y = [self.special_dict[ROOT]]
+#                     sentence_y = [self.special_dict[ROOT]]
+                    sentence_y = []
 
             if pd.notna(i):
                 sentence_words.append(self.words_dict.get(line['Token'], self.special_dict[UNK]))
