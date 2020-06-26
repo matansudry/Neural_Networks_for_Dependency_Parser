@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 
 
-def _naming_scheme(version, epoch, seed, dir=False):
+def _naming_scheme(version, epoch, seed):
     """a func for converting a comb of version, epoch, seed to a filename with a fixed naming_scheme
 
     Parameters
@@ -22,29 +22,25 @@ def _naming_scheme(version, epoch, seed, dir=False):
         the save type: -1 for last model, an int for a specific epoch, 'best' for best epoch
     seed : int
         random seed used in the model
-    dir : bool, optional
-        returns the version dir name
 
     Returns
     -------
     str
-        the Checkpoint filename if dir=False
-        the version dir name if dir=True
+        the Checkpoint filename
     """
-    if dir:
-        return '{}'.format(version)
-    if isinstance(epoch, int):
-        epoch = "{:3d}".format(epoch)
-    return os.path.join('{}'.format(version), 'checkpoint_{}_seed-{}_epoch-{}.pth'.format(version, epoch, seed))
+    if not isinstance(epoch, str):
+        epoch = "{:03d}".format(epoch)
+    return 'checkpoint_{:}_epoch-{:}_seed-{:}.pth'.format(version, epoch, seed)
 
-def load_model(version=None, models_path=None, epoch=-1, seed=42, prints=True, naming_scheme=_naming_scheme, explicit_file=None):
+def load_model(version=None, versions_dir=None, epoch=-1, seed=42, prints=True,
+               naming_scheme=_naming_scheme, explicit_file=None):
     """a func for loading a Checkpoint using a comb of version, epoch, seed usind the dill module
 
     Parameters
     ----------
     version : convertable to str, optional if is given explicit_file
         The version name of the Checkpoint (default is None)
-    models_path : str, optional if is given explicit_file
+    versions_dir : str, optional if is given explicit_file
         The full or relative path to the versions dir (default is None)
     epoch : str or int, optional
         the save type: -1 for last model, an int for a specific epoch, 'best' for best epoch (default is -1)
@@ -65,7 +61,7 @@ def load_model(version=None, models_path=None, epoch=-1, seed=42, prints=True, n
     import dill
     
     if explicit_file is None:
-        model_path = os.path.join(models_path, naming_scheme(version, epoch, seed))
+        model_path = os.path.join(versions_dir, str(version), naming_scheme(version, epoch, seed))
     else:
         model_path = explicit_file
     try:
@@ -112,7 +108,7 @@ class Checkpoint:
         an identifier for the class instance version
     seed : int
         a constant seed to be used in all model interactions
-    models_path : str
+    versions_dir : str
         path to be used for versions dirs
     model : nn.Module instance
         the model
@@ -147,7 +143,7 @@ class Checkpoint:
 
     Examples
     --------
-    >>> checkpoint = Checkpoint(models_path='models',
+    >>> checkpoint = Checkpoint(versions_dir='models',
     >>>                         version=1.0,
     >>>                         model=model,
     >>>                         score=sklearn.metrics.roc_auc_score,
@@ -160,12 +156,13 @@ class Checkpoint:
     >>>                         prints=False)  # bool
     """
 
-    def __init__(self, models_path, version, model, score, loss_decision_func=_loss_decision_func, out_decision_func=lambda x : x, seed=42,
-                 optimizer=torch.optim.Adam, criterion=nn.BCELoss, naming_scheme=_naming_scheme, save=False, prints=False):
+    def __init__(self, version, model, optimizer, criterion, score, versions_dir,
+                 loss_decision_func=_loss_decision_func, out_decision_func=lambda x : x, seed=42,
+                 custom_run_func=None, naming_scheme=_naming_scheme, save=False, prints=False):
         """
         Parameters
         -------
-        models_path : str
+        versions_dir : str
             path to be used for versions dirs
         version : convertable to str
             an identifier for the class instance version
@@ -194,7 +191,7 @@ class Checkpoint:
 
         Examples
         --------
-        >>> checkpoint = Checkpoint(models_path='models',
+        >>> checkpoint = Checkpoint(versions_dir='models',
         >>>                         version=1.0,
         >>>                         model=model,
         >>>                         score=sklearn.metrics.roc_auc_score,
@@ -210,14 +207,17 @@ class Checkpoint:
         self.seed = seed
         torch.manual_seed(self.seed)
         np.random.seed(self.seed)
-        self.models_path = models_path
+        self.versions_dir = versions_dir
         self.naming_scheme = naming_scheme
         self.model = model
         self.optimizer = optimizer([p for p in self.model.parameters() if p.requires_grad], lr=4e-4)
         self.criterion = criterion()
         self.score = score
+        self.custom_run_func = custom_run_func
         self.loss_decision_func = loss_decision_func
         self.out_decision_func = out_decision_func
+
+        optimizer_params = sorted([param for param in self.optimizer.param_groups[0].keys() if param != 'params'])
         self.log = pd.DataFrame(columns=['train_time',
                                          'timestamp',
                                          'train_loss',
@@ -226,7 +226,27 @@ class Checkpoint:
                                          'val_score',
                                          'batch_size',
                                          'best'
-                                        ] + sorted([param for param in self.optimizer.param_groups[0].keys() if param != 'params']))
+                                        ] + optimizer_params).astype(dtype={'train_time': np.datetime64,
+                                                                            'timestamp': np.float64,
+                                                                            'train_loss': np.float64,
+                                                                            'val_loss': np.float64,
+                                                                            'train_score': np.float64,
+                                                                            'val_score': np.float64,
+                                                                            'batch_size': np.int64,
+                                                                            'best': np.bool,
+                                                           }).astype(dtype={param: type(self.optimizer.param_groups[0][param])
+                                                                            for param in optimizer_params
+                                                                            if type(self.optimizer.param_groups[0][param]) in {bool, int, float}
+                                                                            })
+#         self.log = pd.DataFrame(columns=['train_time',
+#                                          'timestamp',
+#                                          'train_loss',
+#                                          'val_loss',
+#                                          'train_score',
+#                                          'val_score',
+#                                          'batch_size',
+#                                          'best'
+#                                         ] + sorted([param for param in self.optimizer.param_groups[0].keys() if param != 'params']))
 
         if save:
             self.save()
@@ -235,6 +255,14 @@ class Checkpoint:
             print("Number of parameters {} ".format(sum(param.numel() for param in self.model.parameters())) + 
                              "trainable {}".format(sum(param.numel() for param in self.model.parameters() if param.requires_grad)))
 
+    def __str__(self):
+        return f"Checkpoint(version={version}, model={model}, optimizer={optimizer}, " + \
+               f"criterion={criterion}, score={score}, decision_func={decision_func}, " + \
+               f"seed={seed}, versions_dir={versions_dir}, naming_scheme={naming_scheme}, )"
+    
+    def __repr__(self):
+        return str(self)
+            
     def get_log(self, col='epoch', epoch=-1):
         """
         extracts stats from self.log
@@ -299,27 +327,28 @@ class Checkpoint:
         """
         import dill
 
+        version_dir = os.path.join(self.versions_dir, self.version)
         if explicit_file is not None:
 #             torch.save(self, explicit_file)
             with open(explicit_file, 'wb') as f:
                 dill.dump(self, f)
             return
 
-        if not os.path.exists(self.models_path):
-            os.mkdir(self.models_path)
-        if not os.path.exists(os.path.join(self.models_path, self.naming_scheme(self.version, -1, self.seed, dir=True))):
-            os.mkdir(os.path.join(self.models_path, self.naming_scheme(self.version, -1, self.seed, dir=True)))
+        if not os.path.exists(self.versions_dir):
+            os.mkdir(self.versions_dir)
+        if not os.path.exists(os.path.join(version_dir)):
+            os.mkdir(os.path.join(version_dir))
 
-#         torch.save(self, os.path.join(self.models_path, self.naming_scheme(self.version, -1, self.seed)))
-        with open(os.path.join(self.models_path, self.naming_scheme(self.version, -1, self.seed)), 'wb') as f:
+#         torch.save(self, os.path.join(version_dir, self.naming_scheme(self.version, -1, self.seed)))
+        with open(os.path.join(version_dir, self.naming_scheme(self.version, -1, self.seed)), 'wb') as f:
             dill.dump(self, f)
         if best:
-#             torch.save(self, os.path.join(self.models_path, self.naming_scheme(self.version, 'best', self.seed)))
-            with open(os.path.join(self.models_path, self.naming_scheme(self.version, 'best', self.seed)), 'wb') as f:
+#             torch.save(self, os.path.join(version_dir, self.naming_scheme(self.version, 'best', self.seed)))
+            with open(os.path.join(version_dir, self.naming_scheme(self.version, 'best', self.seed)), 'wb') as f:
                 dill.dump(self, f)
         if epoch:
-#             torch.save(self, os.path.join(self.models_path, self.naming_scheme(self.version, self.get_log(), self.seed)))
-            with open(os.path.join(self.models_path, self.naming_scheme(self.version, self.get_log(), self.seed)), 'wb') as f:
+#             torch.save(self, os.path.join(version_dir, self.naming_scheme(self.version, self.get_log(), self.seed)))
+            with open(os.path.join(version_dir, self.naming_scheme(self.version, self.get_log(), self.seed)), 'wb') as f:
                 dill.dump(self, f)
 
     def plot_checkpoint(self, attributes, plot_title, y_label, scale='linear', basey=10, save=False):
@@ -363,7 +392,7 @@ class Checkpoint:
         plt.legend(attributes)
         plt.title(plot_title)
         if save:
-            plt.savefig(os.path.join(self.models_path, self.naming_scheme(self.version, -1, self.seed, dir=True), '{}.png'.format(plot_title)), dpi=200)
+            plt.savefig(os.path.join(self.versions_dir, self.naming_scheme(self.version, -1, self.seed, dir=True), '{}.png'.format(plot_title)), dpi=200)
         plt.show()
 
     def _run(self, device, data_loader, train=False, results=False, decision_func=None):
@@ -406,7 +435,8 @@ class Checkpoint:
             return float(loss_sum.mean()), float(self.score(y_true, y_pred))
             
 
-    def train(self, device, train_dataset, val_dataset, train_epochs=0, batch_size=64, optimizer_params={}, prints=True, p_dropout=0, epochs_save=0, lr_decay=0.0, save=False):
+    def train(self, device, train_dataset, val_dataset, train_epochs=0, batch_size=64,
+              optimizer_params={}, prints=True, p_dropout=0, epochs_save=0, lr_decay=0.0, early_stop=0, save=False):
         """
         performs a training session
 
@@ -460,13 +490,20 @@ class Checkpoint:
             for train_epoch in range(train_epochs):
                 epoch = train_epoch + start_epoch + 1
                 # train epoch
-                self._run(device, train_loader, train=True)
-                with torch.no_grad():
-                    train_loss, train_score = self._run(device, train_loader, train=False)
-                    val_loss, val_score = self._run(device, val_loader, train=False)
+                if self.custom_run_func is not None:
+                    self.custom_run_func(device, train_loader, train=True)
+                    with torch.no_grad():
+                        train_loss, train_score = self.custom_run_func(device, train_loader, train=False)
+                        val_loss, val_score = self.custom_run_func(device, val_loader, train=False)
+                else:
+                    self._run(device, train_loader, train=True)
+                    with torch.no_grad():
+                        train_loss, train_score = self._run(device, train_loader, train=False)
+                        val_loss, val_score = self._run(device, val_loader, train=False)
 
                 # save sample to checkpoint
-                best = val_score > self.get_log('val_score', epoch='best')
+                best_epoch = self.get_log('epoch', epoch='best')
+                new_best = val_score > self.get_log('val_score', epoch='best')
                 train_time = float(start_time + (time.time() - tic)/60)
 
                 to_log = [train_time,
@@ -476,7 +513,7 @@ class Checkpoint:
                           train_score,
                           val_score,
                           batch_size,
-                          best,
+                          new_best,
                           ] + list(self._get_optimizer_params().values())
                 self.log.loc[epoch] = to_log
 
@@ -485,7 +522,7 @@ class Checkpoint:
                     self.save()
                     if epoch % epochs_save == 0:
                         self.save(epoch=True)
-                    if best:
+                    if new_best:
                         self.save(best=True)
 
                 # lr_decay
@@ -494,8 +531,11 @@ class Checkpoint:
 
                 # epoch progress prints
                 if prints:
-                    print('epoch {:3d}/{:3d} | train_loss {:.5f} | val_loss {:.5f} | train_score {:.5f} | val_score {:.5f} | train_time {:6.2f} min'
-                          .format(epoch, train_epochs + start_epoch, train_loss, val_loss, train_score, val_score, train_time))
+                    print('epoch {:3d}/{:3d} | train_loss {:.5f} | val_loss {:.5f} | train_score {:.5f} | val_score {:.5f} | train_time {:6.2f} min{:}'
+                          .format(epoch, train_epochs + start_epoch, train_loss, val_loss, train_score, val_score, train_time, ' *' if new_best else ''))
+                    
+                if early_stop > 0 and epoch - best_epoch > early_stop:
+                    break
 
             # # end of session prints
             # if prints:

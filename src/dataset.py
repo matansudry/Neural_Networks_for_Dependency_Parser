@@ -7,11 +7,14 @@ import torch.nn as nn
 from tqdm import tqdm
 
 
+
 ROOT = '<root>'
 UNK = '<unk>'
 PAD = '<pad>'
 y_PAD = '<y_pad>'
 SPECIAL = [y_PAD, PAD, UNK, ROOT]
+
+glove_dim = 300
 
 class DataSet:
     """
@@ -30,7 +33,7 @@ class DataSet:
     inv_tokens : dict
         key=index, value=token
     """
-    def __init__(self, path, train_dataset=None, tagged=True, tqdm_bar=False):
+    def __init__(self, path, train_dataset=None, tagged=True, tqdm_bar=False, use_glove=False):
         """
         Parameters
         -------
@@ -51,19 +54,12 @@ class DataSet:
         self.df = pd.read_csv(path, names=['Token_Counter', 'Token', 3, 'Token_POS', 5 ,6 , 'Token_Head', 8, 9, 10],
                               sep='\t', skip_blank_lines=False)
         self.df_preds = None
-
-        if train_dataset is None:
-            # self.max_sentence_len is used as self.X, self.y 2nd dimention
-            self.max_sentence_len = self.df['Token_Counter'].dropna().max() + 1
-
-            self.words_dict = {token: i + len(SPECIAL) - 1 for i, token in enumerate(sorted(list(set(self.df['Token'].dropna().values))))}
-            self.tags_dict = {token: i + len(SPECIAL) - 1 for i, token in enumerate(sorted(list(set(self.df['Token_POS'].dropna().values))))}
-            self.special_dict = {token: i - 1 for i, token in enumerate(SPECIAL)}
-            
-            self.words_num = len(self.words_dict) + len(self.special_dict) - 1
-            self.tags_num = len(self.tags_dict) + len(self.special_dict) - 1
-
-        else:
+        
+        if train_dataset is not None:
+            if use_glove:
+                assert train_dataset.embeds is True, 'train_dataset must have glove embedings'
+                self.embeds = True
+                self.words_vectors = train_dataset.words_vectors
             self.max_sentence_len = train_dataset.max_sentence_len
 
             self.words_dict = train_dataset.words_dict
@@ -72,6 +68,27 @@ class DataSet:
 
             self.words_num = train_dataset.words_num
             self.tags_num = train_dataset.tags_num
+        else:
+            if use_glove:
+                self.embeds = True
+                from collections import Counter
+                from torchtext.vocab import Vocab
+
+                glove = Vocab(Counter(dict(self.df['Token'].value_counts())), vectors="glove.6B.300d", specials=SPECIAL)
+                self.words_dict = glove.stoi
+                self.words_vectors = glove.vectors
+            else:
+                self.embeds = False
+                self.words_dict = {token: i + len(SPECIAL) - 1 for i, token in enumerate(sorted(list(set(self.df['Token'].dropna().values))))}
+
+            # self.max_sentence_len is used as self.X, self.y 2nd dimention
+            self.max_sentence_len = self.df['Token_Counter'].dropna().max() + 1
+
+            self.tags_dict = {token: i + len(SPECIAL) - 1 for i, token in enumerate(sorted(list(set(self.df['Token_POS'].dropna().values))))}
+            self.special_dict = {token: i - 1 for i, token in enumerate(SPECIAL)}
+            
+            self.words_num = len(self.words_dict) + len(self.special_dict) - 1
+            self.tags_num = len(self.tags_dict) + len(self.special_dict) - 1
             
         # fill X, y tensors with data
         self.words_tensor = []
@@ -94,6 +111,7 @@ class DataSet:
 
             if pd.notna(i):
                 sentence_words.append(self.words_dict.get(line['Token'], self.special_dict[UNK]))
+                
                 sentence_tags.append(self.tags_dict.get(line['Token_POS'], self.special_dict[UNK]))
                 if tagged:
                     sentence_y.append(line['Token_Head'])
@@ -101,11 +119,22 @@ class DataSet:
                     sentence_y.append(0.0)
             else:
                 self.words_tensor.append(torch.LongTensor(sentence_words))
+                
                 self.tags_tensor.append(torch.LongTensor(sentence_tags))
                 self.lens.append(len(sentence_words))
                 self.y.append(torch.FloatTensor(sentence_y))
         
-        self.words_tensor = nn.utils.rnn.pad_sequence(self.words_tensor, batch_first=False, padding_value=self.special_dict[PAD]).transpose(1, 0)
+        self.words_tensor = nn.utils.rnn.pad_sequence(self.words_tensor,
+                                                      batch_first=False,
+                                                      padding_value=self.special_dict[PAD]).transpose(1, 0)
+        
+        if use_glove:
+            word_vectors_tensor = torch.zeros([self.words_tensor.shape[0], self.words_tensor.shape[1], glove_dim])
+            for i in tqdm(range(self.words_tensor.shape[0])):
+                for j in range(self.words_tensor.shape[1]):
+                    word_vectors_tensor[i, j, :] = self.words_vectors[self.words_tensor[i, j]]
+            self.words_tensor = word_vectors_tensor
+        
         self.tags_tensor = nn.utils.rnn.pad_sequence(self.tags_tensor, batch_first=False, padding_value=self.special_dict[PAD]).transpose(1, 0)
         self.y = nn.utils.rnn.pad_sequence(self.y, batch_first=False, padding_value=self.special_dict[y_PAD]).transpose(1, 0)
 
