@@ -238,15 +238,6 @@ class Checkpoint:
                                                                             for param in optimizer_params
                                                                             if type(self.optimizer.param_groups[0][param]) in {bool, int, float}
                                                                             })
-#         self.log = pd.DataFrame(columns=['train_time',
-#                                          'timestamp',
-#                                          'train_loss',
-#                                          'val_loss',
-#                                          'train_score',
-#                                          'val_score',
-#                                          'batch_size',
-#                                          'best'
-#                                         ] + sorted([param for param in self.optimizer.param_groups[0].keys() if param != 'params']))
 
         if save:
             self.save()
@@ -492,11 +483,13 @@ class Checkpoint:
                 # train epoch
                 if self.custom_run_func is not None:
                     self.custom_run_func(device, train_loader, train=True)
+                    self.optimizer.zero_grad()
                     with torch.no_grad():
                         train_loss, train_score = self.custom_run_func(device, train_loader, train=False)
                         val_loss, val_score = self.custom_run_func(device, val_loader, train=False)
                 else:
                     self._run(device, train_loader, train=True)
+                    self.optimizer.zero_grad()
                     with torch.no_grad():
                         train_loss, train_score = self._run(device, train_loader, train=False)
                         val_loss, val_score = self._run(device, val_loader, train=False)
@@ -536,16 +529,6 @@ class Checkpoint:
                     
                 if early_stop > 0 and epoch - best_epoch > early_stop:
                     break
-
-            # # end of session prints
-            # if prints:
-                # print("train_loss {:.6f} | prev {}\nval_loss {:.6f} | prev {}"
-                      # .format(self.get_log('train_loss'), self.get_log('train_loss', start_epoch),
-                             # self.get_log('val_loss'), self.get_log('val_loss', start_epoch)))
-                # print("train_score {:.6f} | prev {}\nval_score {:.6f} | prev {}"
-                      # .format(self.get_log('train_score'), self.get_log('train_score', start_epoch),
-                             # self.get_log('val_score'), self.get_log('val_score', start_epoch)))
-
 
     def predict(self, dataset, batch_size, device, results=True, decision_func=None):
         torch.manual_seed(self.seed)

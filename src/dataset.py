@@ -6,6 +6,9 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
+seed = 42
+np.random.seed(seed)
+torch.manual_seed(seed)
 
 
 ROOT = '<root>'
@@ -33,7 +36,13 @@ class DataSet:
     inv_tokens : dict
         key=index, value=token
     """
-    def __init__(self, path, train_dataset=None, tagged=True, tqdm_bar=False, use_glove=False):
+    def __init__(self,
+                 path,
+                 train_dataset=None,
+                 tagged=True,
+                 use_glove=False,
+                 tqdm_bar=False
+                ):
         """
         Parameters
         -------
@@ -55,10 +64,12 @@ class DataSet:
                               sep='\t', skip_blank_lines=False)
         self.df_preds = None
         
+        self.word_frequency = pd.DataFrame(self.df['Token'].dropna().value_counts())
+        
+        self.words_vectors = None
         if train_dataset is not None:
             if use_glove:
-                assert train_dataset.embeds is True, 'train_dataset must have glove embedings'
-                self.embeds = True
+                assert train_dataset.words_vectors is not None, 'train_dataset.words_vectors must be glove embedings'
                 self.words_vectors = train_dataset.words_vectors
             self.max_sentence_len = train_dataset.max_sentence_len
 
@@ -70,15 +81,13 @@ class DataSet:
             self.tags_num = train_dataset.tags_num
         else:
             if use_glove:
-                self.embeds = True
                 from collections import Counter
                 from torchtext.vocab import Vocab
 
-                glove = Vocab(Counter(dict(self.df['Token'].value_counts())), vectors="glove.6B.300d", specials=SPECIAL)
+                glove = Vocab(Counter(dict(self.word_frequency['Token'])), vectors="glove.6B.300d", specials=SPECIAL)
                 self.words_dict = glove.stoi
                 self.words_vectors = glove.vectors
             else:
-                self.embeds = False
                 self.words_dict = {token: i + len(SPECIAL) - 1 for i, token in enumerate(sorted(list(set(self.df['Token'].dropna().values))))}
 
             # self.max_sentence_len is used as self.X, self.y 2nd dimention
@@ -128,16 +137,9 @@ class DataSet:
                                                       batch_first=False,
                                                       padding_value=self.special_dict[PAD]).transpose(1, 0)
         
-        if use_glove:
-            word_vectors_tensor = torch.zeros([self.words_tensor.shape[0], self.words_tensor.shape[1], glove_dim])
-            for i in tqdm(range(self.words_tensor.shape[0])):
-                for j in range(self.words_tensor.shape[1]):
-                    word_vectors_tensor[i, j, :] = self.words_vectors[self.words_tensor[i, j]]
-            self.words_tensor = word_vectors_tensor
-        
         self.tags_tensor = nn.utils.rnn.pad_sequence(self.tags_tensor, batch_first=False, padding_value=self.special_dict[PAD]).transpose(1, 0)
         self.y = nn.utils.rnn.pad_sequence(self.y, batch_first=False, padding_value=self.special_dict[y_PAD]).transpose(1, 0)
-
+        
     def insert_predictions(self, preds, name):
         self.df_preds = self.df.copy()
         counter = 0
@@ -153,9 +155,24 @@ class DataSet:
         assert self.df_preds.shape == self.df.shape, 'self.df_preds.shape must match self.df.shape'
         return (self.df_preds['Token_Head'].dropna().values == self.df['Token_Head'].dropna().values).mean()
                 
-    @property
-    def dataset(self):
-        return list(zip(self.words_tensor, self.tags_tensor, self.lens, self.y))
+    def dataset(self, word_dropout_alpha=0.25, train=False):
+        if train and word_dropout_alpha > 0.0:
+            temp = self.word_frequency.copy()
+
+            temp['Token'] = word_dropout_alpha/(temp['Token'] + word_dropout_alpha)
+            rnd = np.random.random(len(temp))
+            temp['Token'] = (temp['Token'] > rnd)
+
+            drop = temp[temp['Token']].index
+            drop = [self.words_dict[token] for token in drop]
+
+            mask = mask = -(torch.Tensor(np.isin(self.words_tensor, drop)) - 1)
+
+            new_words_tensor = (mask * self.words_tensor).long()
+        else:
+            new_words_tensor = self.words_tensor
+        
+        return list(zip(new_words_tensor, self.tags_tensor, self.lens, self.y))
 
     def __len__(self):
         return len(self.X)

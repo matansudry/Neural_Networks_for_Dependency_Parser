@@ -291,6 +291,68 @@ def _find_cycle(parents: List[int],
     return has_cycle, list(cycle)
 
 
+# def test_chu_liu_edmonds(y_pred,flat_y_pred ,mask, padding):
+#     y_pred = torch.exp(y_pred)
+#     lens = y_pred.sum(dim=1) - 1
+#     batch_size = (y_pred.shape)[0]
+#     max_sentence_length = (y_pred.shape)[1]
+#     max_head = (y_pred.shape)[2]
+    
+#     mask_with_root = torch.zeros([batch_size, max_sentence_length + 1], dtype=torch.float)
+#     mask_with_root[:,1:] = mask
+#     mask_with_root[:,0] = 1
+    
+#     y_pred_with_root = torch.zeros([batch_size, max_sentence_length + 1, max_head], dtype=torch.float)
+#     y_pred_with_root[:,1:,:] = y_pred
+#     max_sentence_length += 1
+    
+#     y_pred_final = torch.zeros([batch_size, max_sentence_length], dtype=torch.float)
+      
+    
+#     ## need to check we are working from 0 - max_sentence_length including root  
+    
+#     for batch_i in range(batch_size):
+# #         sentence_length = max_sentence_length
+# #         for i in range(max_sentence_length): # getting the sentence length in batch_i
+# #             if mask_with_root[batch_i][i] == 0:
+# #                 sentence_length = i
+# #                 break 
+# #         G = {}# G = {head: [modifier]}
+# #         W = {}# W = {(head, modifier): weight}
+# #         for head_word_index in range(sentence_length):# + 1):
+# #             G[head_word_index] = [] # creating empty array for each head
+# #         for modifier_word_index  in range(1, sentence_length):# + 1):
+# #             for head_word_index in range(sentence_length):# + 1):
+# #                 if (modifier_word_index == head_word_index): # if the medifier and head are the same
+# #                     continue
+# #                 G[head_word_index].append(modifier_word_index) # adding modifier to each head
+# #                 W[(head_word_index,modifier_word_index)] = float(y_pred_with_root[batch_i][modifier_word_index][head_word_index])# creating the edges
+        
+# #         CORRECT_MST_HEADS = numpy.zeros(sentence_length)
+# #         for modifier_word_index in range(sentence_length):
+# #             if modifier_word_index == 0:
+# #                 CORRECT_MST_HEADS[modifier_word_index] = -1
+# #                 continue
+# #             CORRECT_MST_HEADS[modifier_word_index] = modifier_word_index + 1 
+        
+# # #         ## creating temp exmaple to validate the code
+# #         for i in range(sentence_length):
+# #             for j in range(1, sentence_length):
+# #                 if (i == j-1):
+# #                     W[(i,j)] = 5
+# #                 CORRECT_MST_HEADS[j] = j-1             
+# #         num_nodes = len(G.keys())
+# #         edge_scores_matrix = numpy.zeros((num_nodes, num_nodes))
+# #         for (i, j), w in W.items():
+# #             edge_scores_matrix[i][j] = w
+#         mst, _ = decode_mst(y_pred_with_root, lens[batch_i], has_labels=False)
+#         y_pred_final[batch_i,0:sentence_length] = torch.from_numpy(mst) # addint the reslut to Tensor
+#         y_pred_final[batch_i,sentence_length:max_sentence_length] = padding # adding padding in the rest of the tensor that is long then the sentence
+#         y_pred_final_without_root = y_pred_final[:,1:]
+#         flat_mask = mask_with_root[:,1:]
+#         flat_y_pred_final = y_pred_final_without_root[flat_mask ==1.]
+#     return numpy.array(flat_y_pred_final)
+
 def test_chu_liu_edmonds(y_pred,flat_y_pred ,mask, padding):
     y_pred = torch.exp(y_pred)
     batch_size = (y_pred.shape)[0]
