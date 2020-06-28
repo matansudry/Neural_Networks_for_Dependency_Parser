@@ -18,6 +18,10 @@ def loss_decision_func(self, device, batch, prints=False):
 
 
 class AdditiveAttention(nn.Module):
+    """
+    additive attention module:
+        x_y_attn_score = V @ tanh(W1 @ x + W2 @ y)
+    """
     def __init__(self,
                  input_dim,
                  attention_dim,
@@ -25,7 +29,6 @@ class AdditiveAttention(nn.Module):
                  bias=True,
                  include_root=False,
                  **kwargs):
-
         super(AdditiveAttention, self).__init__()
 
         self.include_root = include_root
@@ -38,51 +41,45 @@ class AdditiveAttention(nn.Module):
         self.out = nn.Linear(attention_dim, 1, bias=bias)
 
     def forward(self, x, prints=False):
-        print('AdditiveAttention input', x.shape) if prints else None
-        # [batch_size, max_len, input_dim]
+        print('attention input', x.shape) if prints else None  # [batch_size, max_len, input_dim]
 
         x1 = self.mlp1(x)
-        print('mlp1', x1.shape) if prints else None
-        # [batch_size, max_len, attention_dim]
+        print('mlp1', x1.shape) if prints else None  # [batch_size, max_len, attention_dim]
 
         x2 = self.mlp2(x)
-        print('mlp2', x2.shape) if prints else None
-        # [batch_size, max_len, attention_dim]
+        print('mlp2', x2.shape) if prints else None  # [batch_size, max_len, attention_dim]
 
         x1 = x1.unsqueeze(1)
-        print('unsqueeze_x1', x1.shape) if prints else None
-        # [batch_size, 1, max_len, attention_dim]
+        print('unsqueeze_x1', x1.shape) if prints else None  # [batch_size, 1, max_len, attention_dim]
 
         x2 = x2.unsqueeze(2)
-        print('unsqueeze_x2', x2.shape) if prints else None
-        # [batch_size, max_len, 1, attention_dim]
+        print('unsqueeze_x2', x2.shape) if prints else None  # [batch_size, max_len, 1, attention_dim]
 
         x = x1 + x2
-        print('outer_add_x1_x2', x.shape) if prints else None
-        # [batch_size, max_len, max_len, attention_dim]
+        print('outer_add(x1, x2, dim=1)', x.shape) if prints else None  # [batch_size, max_len, max_len, attention_dim]
 
         # del ROOT from modifiers dimention (dim=1)
         if not self.include_root:
             x = x[:, 1:, :, :]
-            print('del ROOT', x.shape) if prints else None
-            # [batch_size, max_len - 1, max_len, attention_dim]
+            print('del ROOT', x.shape) if prints else None  # [batch_size, max_len - 1, max_len, attention_dim]
 
         x = self.activation(x)
-        print('activation', x.shape) if prints else None
-        # [batch_size, max_len - 1, max_len, attention_dim]
+        print('activation', x.shape) if prints else None  # [batch_size, max_len - 1, max_len, attention_dim]
 
         x = self.out(x)
-        print('out', x.shape) if prints else None
-        # [batch_size, max_len - 1, max_len, 1]
+        print('out', x.shape) if prints else None  # [batch_size, max_len - 1, max_len, 1]
 
         x = x.squeeze(-1)
-        print('squeeze', x.shape) if prints else None
-        # [batch_size, max_len - 1, max_len]
+        print('squeeze', x.shape) if prints else None   # [batch_size, max_len - 1, max_len]
 
         return x
 
 
 class DotAttention(nn.Module):
+    """
+    dot product attention module:
+        x_y_attn_score = x.T @ y
+    """
     def __init__(self,
                  include_root=False,
                  **kwargs):
@@ -92,24 +89,24 @@ class DotAttention(nn.Module):
         self.include_root = include_root
 
     def forward(self, x, prints=False):
-
-        print('DotAttention input', x.shape) if prints else None
-        # [batch_size, max_len, input_dim]
+        print('attention input', x.shape) if prints else None  # [batch_size, max_len, input_dim]
 
         x = torch.einsum('sae, sbe -> sab', x, x)
-        print('dot attention', x.shape) if prints else None
-        # [batch_size, max_len - 1, max_len]
+        print('dot attention', x.shape) if prints else None  # [batch_size, max_len - 1, max_len]
 
         # del ROOT from modifiers dimention (dim=1)
         if not self.include_root:
             x = x[:, 1:, :]
-            print('del ROOT', x.shape) if prints else None
-            # [batch_size, max_len - 1, max_len]
+            print('del ROOT', x.shape) if prints else None  # [batch_size, max_len - 1, max_len]
 
         return x
 
 
 class MultiplicativeAttention(nn.Module):
+    """
+    multiplicative attention module:
+        x_y_attn_score = x.T @ W @ y
+    """
     def __init__(self,
                  input_dim,
                  bias=True,
@@ -120,22 +117,18 @@ class MultiplicativeAttention(nn.Module):
         self.W = nn.Linear(input_dim, input_dim, bias=bias)
 
     def forward(self, x, prints=False):
-        print('DotAttention input', x.shape) if prints else None
-        # [batch_size, max_len, input_dim]
+        print('attention input', x.shape) if prints else None  # [batch_size, max_len, input_dim]
 
         x1 = self.W(x)
-        print('x1 = x.T @ W', x.shape) if prints else None
-        # [batch_size, max_len, input_dim]
+        print('x1 = x.T @ W', x.shape) if prints else None  # [batch_size, max_len, input_dim]
 
         x = torch.einsum('sai, sbi -> sab', x1, x)
-        print('x1 @ x', x.shape) if prints else None
-        # [batch_size, max_len, max_len]
+        print('x1 @ x', x.shape) if prints else None  # [batch_size, max_len, max_len]
 
         # del ROOT from modifiers dimention (dim=1)
         if not self.include_root:
             x = x[:, 1:, :]
-            print('del ROOT', x.shape) if prints else None
-            # [batch_size, max_len - 1, max_len]
+            print('del ROOT', x.shape) if prints else None  # [batch_size, max_len - 1, max_len]
 
         return x
 

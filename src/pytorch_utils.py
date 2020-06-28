@@ -1,3 +1,8 @@
+"""
+pytorch utils module
+by Alex Zaikin
+"""
+
 import os
 import time
 import math
@@ -383,7 +388,7 @@ class Checkpoint:
         plt.legend(attributes)
         plt.title(plot_title)
         if save:
-            plt.savefig(os.path.join(self.versions_dir, self.naming_scheme(self.version, -1, self.seed, dir=True), '{}.png'.format(plot_title)), dpi=200)
+            plt.savefig(os.path.join(self.versions_dir, self.version, '{}.png'.format(plot_title)), dpi=200)
         plt.show()
 
     def _run(self, device, data_loader, train=False, results=False, decision_func=None):
@@ -412,7 +417,6 @@ class Checkpoint:
                 self.optimizer.step()
             else:
                 loss_sum = np.append(loss_sum, float(loss.data))
-#                 y_pred = np.append(y_pred, self.out_decision_func(flat_out.detach().cpu().numpy()))
                 if not decision_func:
                     y_pred = np.append(y_pred, self.out_decision_func(out.detach().cpu(), flat_out.detach().cpu().numpy(), mask, self.model.y_pad))
                 else:

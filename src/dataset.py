@@ -1,14 +1,13 @@
 import os
+import csv
 import numpy as np
 import pandas as pd
 
 import torch
 import torch.nn as nn
-from tqdm import tqdm
 
 seed = 42
 np.random.seed(seed)
-torch.manual_seed(seed)
 
 
 ROOT = '<root>'
@@ -21,20 +20,7 @@ glove_dim = 300
 
 class DataSet:
     """
-    Attributes
-    -------
-    df : pd.DataFrame, optional if del_df=False
-        the original csv
-    max_sentence_len : int
-        max length of a sentence, used as the 2nd dimention of self.X, self.y
-    X : torch.FloatTensor
-        Token and Token_POS tensor, torch.Size([num_of_sentences, max_sentence_len, 2])
-    y : torch.FloatTensor
-        Token_Head tensor, torch.Size([num_of_sentences, max_sentence_len, 1])
-    tokens : dict
-         key=token, value=index
-    inv_tokens : dict
-        key=index, value=token
+    a general DataSet for dependecy parsing
     """
     def __init__(self,
                  path,
@@ -47,17 +33,19 @@ class DataSet:
         Parameters
         -------
         path : str
-            path to csv
-        train_dataset : DataSet, optional
-            shouldbe passed for test/validation datasets (default is None)
-        tagged : bool, optional
-            if dataset has tags (default is True)
-        tqdm_bar : bool, optional
-            if to display progress bar (default is False)
-        keep_df : bool, optional
-            if to keep original csv dataframe (default is False)
-        pad : bool, optional
-            if to use a large padded tensor or a list of sentence tensors (default is True)
+            the path to the csv
+        train_dataset : a DataSet instance
+            should contain the train_dataset for creating validation/test datasets,
+            it is important for the validation/test dataset to have the same vocabulary and word indecies as the train dataset.
+            (default is None)
+        tag_embed_dim : int
+            POS tag embedding dimention (default is 25)
+        tagged : bool
+            is the dataset tagged (default is True)
+        use_glove : bool
+            use the pretrained glove.6B.300d weights (default is False)
+        tqdm_bar : bool
+            show a progress bar for loading (default is False)
         """
         # load csv to pd.DataFrame
         self.df = pd.read_csv(path, names=['Token_Counter', 'Token', 3, 'Token_POS', 5 ,6 , 'Token_Head', 8, 9, 10],
@@ -95,10 +83,10 @@ class DataSet:
 
             self.tags_dict = {token: i + len(SPECIAL) - 1 for i, token in enumerate(sorted(list(set(self.df['Token_POS'].dropna().values))))}
             self.special_dict = {token: i - 1 for i, token in enumerate(SPECIAL)}
-            
+
             self.words_num = len(self.words_dict) + len(self.special_dict) - 1
             self.tags_num = len(self.tags_dict) + len(self.special_dict) - 1
-            
+
         # fill X, y tensors with data
         self.words_tensor = []
         self.tags_tensor = []
@@ -106,6 +94,7 @@ class DataSet:
         self.y = []
 
         if tqdm_bar:
+            from tqdm import tqdm
             iterable = tqdm(self.df.iterrows(), total=len(self.df))
         else:
             iterable = self.df.iterrows()
@@ -120,7 +109,7 @@ class DataSet:
 
             if pd.notna(i):
                 sentence_words.append(self.words_dict.get(line['Token'], self.special_dict[UNK]))
-                
+
                 sentence_tags.append(self.tags_dict.get(line['Token_POS'], self.special_dict[UNK]))
                 if tagged:
                     sentence_y.append(line['Token_Head'])
@@ -128,34 +117,27 @@ class DataSet:
                     sentence_y.append(0.0)
             else:
                 self.words_tensor.append(torch.LongTensor(sentence_words))
-                
+
                 self.tags_tensor.append(torch.LongTensor(sentence_tags))
                 self.lens.append(len(sentence_words))
                 self.y.append(torch.FloatTensor(sentence_y))
-        
+
         self.words_tensor = nn.utils.rnn.pad_sequence(self.words_tensor,
                                                       batch_first=False,
                                                       padding_value=self.special_dict[PAD]).transpose(1, 0)
-        
+
         self.tags_tensor = nn.utils.rnn.pad_sequence(self.tags_tensor, batch_first=False, padding_value=self.special_dict[PAD]).transpose(1, 0)
         self.y = nn.utils.rnn.pad_sequence(self.y, batch_first=False, padding_value=self.special_dict[y_PAD]).transpose(1, 0)
-        
-    def insert_predictions(self, preds, name):
-        self.df_preds = self.df.copy()
-        counter = 0
-        for i in tqdm(self.df_preds.index):
-            if pd.notna(self.df_preds.loc[i, 'Token_Counter']):
-                self.df_preds.loc[i, 'Token_Head'] = preds[counter]
-                counter += 1
-                
-        self.df_preds.to_csv(os.path.join('preds', f'{name}_321128258.labeled'), sep='\t', index=False)
 
-    def get_UAS(self):
-        assert self.df_preds is not None, 'need to run insert_predictions first'
-        assert self.df_preds.shape == self.df.shape, 'self.df_preds.shape must match self.df.shape'
-        return (self.df_preds['Token_Head'].dropna().values == self.df['Token_Head'].dropna().values).mean()
-                
     def dataset(self, word_dropout_alpha=0.25, train=False):
+        """
+        Parameters
+        -------
+        word_dropout_alpha : float > 0
+            alpha word dropout rate, if word_dropout_alpha > 0 the word will be dropped for the training session with p = alpha/(word_tf + alpha)
+        train : bool
+            if train=True, word dropout will be applied with alpha=word_dropout_alpha
+        """
         if train and word_dropout_alpha > 0.0:
             temp = self.word_frequency.copy()
 
@@ -171,14 +153,36 @@ class DataSet:
             new_words_tensor = (mask * self.words_tensor).long()
         else:
             new_words_tensor = self.words_tensor
-        
+
         return list(zip(new_words_tensor, self.tags_tensor, self.lens, self.y))
 
-    def __len__(self):
-        return len(self.X)
+    def insert_predictions(self, preds, name, tqdm_bar=False):
+        self.df_preds = self.df.copy()
+        counter = 0
+        if tqdm_bar:
+            from tqdm import tqdm
+            iterable = tqdm(self.df_preds.index)
+        else:
+            iterable = self.df_preds.index
 
-    def __iter__(self):
-        for x, y in zip(self.X, self.y):
-            yield x, y
+        for i in iterable:
+            if pd.notna(self.df_preds.loc[i, 'Token_Counter']):
+                self.df_preds.loc[i, 'Token_Head'] = preds[counter]
+                counter += 1
+
+        rows = []
+        for i, row in self.df_preds.iterrows():
+            if pd.notna(row.values[0]):
+                rows.append('\t'.join([str(int(col) if isinstance(col, float) else col) for col in list(row.values)]) + '\n')
+            else:
+                rows.append('\n')
+
+        with open(os.path.join('preds', f'{name}_321128258.labeled'), 'w') as f:
+            f.writelines(rows)
+
+    def get_UAS(self):
+        assert self.df_preds is not None, 'need to run insert_predictions first'
+        assert self.df_preds.shape == self.df.shape, 'self.df_preds.shape must match self.df.shape'
+        return (self.df_preds['Token_Head'].dropna().values == self.df['Token_Head'].dropna().values).mean()
 
 
